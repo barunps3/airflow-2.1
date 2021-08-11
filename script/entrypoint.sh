@@ -1,16 +1,44 @@
 #!/bin/bash
 
 export AIRFLOW__CORE__FERNET_KEY=${FERNET_KEY:=$(python -c "from cryptography.fernet import Fernet; FERNET_KEY = Fernet.generate_key().decode(); print(FERNET_KEY)")}
-export ${AIRFLOW__CORE__EXECUTOR:="${EXECUTOR:-Sequential}Executor"}
+export ${AIRFLOW__CORE__EXECUTOR:="SequentialExecutor"} # default executor
 export AIRFLOW__CORE__LOAD_EXAMPLES=False
 
 
+# Install custom python package if requirements.txt is present
+if [ "${AIRFLOW_FETCH_DAGS}" = true ] ; then
+    cd ${AIRFLOW_HOME}/dags
+    echo "Populating DAG folder"
+    if [ -n "${AIRFLOW_DAG_BRANCH}" ] ; then
+        echo "Importing from ${AIRFLOW_DAG_BRANCH}"
+        git clone https://${AIRFLOW_GIT_USERNAME}:${AIRFLOW_GIT_TOKEN}@devstack.vwgroup.com/bitbucket/scm/wepoi/airflow-dag.git dags -b ${AIRFLOW_DAG_BRANCH}
 
+    else
+        echo "Importing Master Branch..."
+        #Initialize DAG Directory
+        git clone https://${AIRFLOW_GIT_USERNAME}:${AIRFLOW_GIT_TOKEN}@devstack.vwgroup.com/bitbucket/scm/wepoi/airflow-dag.git dags
+    fi
+fi
 
 # Install custom python package if requirements.txt is present
-if [ -e "/requirements.txt" ]; then
-    $(command -v pip) install --user -r /requirements.txt
+if [ -e "${AIRFLOW_HOME}/dags/requirements.txt" ]; then
+    $(command -v pip) install --user -r ${AIRFLOW_HOME}/dags/requirements.txt
+    $(command -v pip) install --user -r ${AIRFLOW_HOME}/dags/dev-requirements.txt
 fi
+
+wait_for_port() {
+    local name="$1" host="$2" port="$3"
+    local j=0
+    while ! nc -z "$host" "$port" >/dev/null 2>&1 < /dev/null; do
+        j=$((j+1))
+        if [ $j -ge $TRY_LOOP ]; then
+            echo >&2 "$(date) - $host:$port still not reachable, giving up"
+            exit 1
+        fi
+            echo "$(date) - waiting for $name... $j/$TRY_LOOP"
+            sleep 5
+    done
+}
 
 
 # Other executors than SequentialExecutor drive the need for an SQL database, here PostgreSQL is used
@@ -66,32 +94,41 @@ fi
 
 
 case "$1" in
-  webserver)
-    printf "Core executor is : %s\n" "$AIRFLOW__CORE__EXECUTOR"
-    airflow db init
-    airflow users create --username admin \
-        --password admin \
-        --firstname admin \
-        --lastname admin \
-        --role Admin \
-        --email admin
-    if [ "$AIRFLOW__CORE__EXECUTOR" = "LocalExecutor" ] || [ "$AIRFLOW__CORE__EXECUTOR" = "SequentialExecutor" ]; then
-      # With the "Local" and "Sequential" executors it should all run in one container.
-      airflow scheduler &
-    fi
-    exec airflow webserver
-    ;;
-  worker|scheduler|flower)
-    printf "Core executor is : %s\n" "$AIRFLOW__CORE__EXECUTOR"
-    # Give the webserver time to run initdb.
-    sleep 10
-    exec airflow celery "$@"
-    ;;
-  version)
-    exec airflow "$@"
-    ;;
-  *)
-    # The command is something like bash, not an airflow subcommand. Just run it in the right environment.
-    exec "$@"
-    ;;
+    webserver)
+        airflow version
+        airflow db init
+        airflow users create \
+            --username ADMIN_USER \
+            --firstname ADMIN_FIRST_NAME \
+            --lastname ADMIN_LAST_NAME \
+            --email ADMIN_EMAIL \
+            --role "Admin" \
+            --password ADMIN_PASSWORD
+        if [ "$AIRFLOW__CORE__EXECUTOR" = "LocalExecutor" ] || [ "$AIRFLOW__CORE__EXECUTOR" = "SequentialExecutor" ]; then
+            # With the "Local" and "Sequential" executors it should all run in one container.
+            airflow scheduler &
+        fi
+        exec airflow webserver
+        ;;
+    scheduler)
+        # Give the webserver time to run initdb.
+        sleep 10
+        exec airflow "$@"
+        ;;
+    flower|worker)
+        # Give the webserver time to run initdb.
+        sleep 10
+        if [ "$AIRFLOW__CORE__EXECUTOR" = "CeleryExecutor" ]; then
+            exec airflow celery "$@"
+        else
+            echo "Running in ${AIRFLOW__CORE__EXECUTOR}, no Celery processes nedded here."
+        fi
+        ;;
+    version)
+        exec airflow "$@"
+        ;;
+    *)
+        # The command is something like bash, not an airflow subcommand. Just run it in the right environment.
+        exec "$@"
+        ;;
 esac
