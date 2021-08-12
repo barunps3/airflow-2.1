@@ -6,24 +6,8 @@ export AIRFLOW__CORE__LOAD_EXAMPLES=False
 
 
 # Install custom python package if requirements.txt is present
-if [ "${AIRFLOW_FETCH_DAGS}" = true ] ; then
-    cd ${AIRFLOW_HOME}/dags
-    echo "Populating DAG folder"
-    if [ -n "${AIRFLOW_DAG_BRANCH}" ] ; then
-        echo "Importing from ${AIRFLOW_DAG_BRANCH}"
-        git clone https://${AIRFLOW_GIT_USERNAME}:${AIRFLOW_GIT_TOKEN}@devstack.vwgroup.com/bitbucket/scm/wepoi/airflow-dag.git dags -b ${AIRFLOW_DAG_BRANCH}
-
-    else
-        echo "Importing Master Branch..."
-        #Initialize DAG Directory
-        git clone https://${AIRFLOW_GIT_USERNAME}:${AIRFLOW_GIT_TOKEN}@devstack.vwgroup.com/bitbucket/scm/wepoi/airflow-dag.git dags
-    fi
-fi
-
-# Install custom python package if requirements.txt is present
 if [ -e "${AIRFLOW_HOME}/dags/requirements.txt" ]; then
     $(command -v pip) install --user -r ${AIRFLOW_HOME}/dags/requirements.txt
-    $(command -v pip) install --user -r ${AIRFLOW_HOME}/dags/dev-requirements.txt
 fi
 
 wait_for_port() {
