@@ -1,0 +1,113 @@
+pipeline {
+
+  agent any
+
+  environment {
+    AWS_ACCESS_KEY_ID = credentials('aws_landing_zone_access_id')
+    AWS_SECRET_ACCESS_KEY = credentials('aws_landing_zone_access_key')
+    AIRFLOW_ADMIN_PASSWORD = credentials('dev_airflow_admin_password')
+    GIT_PULL = credentials('git_pull_user')
+
+  }
+
+  stages {
+
+    stage('Build & Test') {
+      steps {
+        configFileProvider([configFile(fileId: getEnvName(env.BRANCH_NAME) + '_AIRFLOW_ADMIN_USER', variable: 'airflow_admin_user')]){
+          script{
+            def airflow_admin = readJSON file: "${env.airflow_admin_user}"
+            def dag_branch = getDAGbranch(env.BRANCH_NAME)
+
+            sh """
+              sed -i 's/ADMIN_USER/${airflow_admin.USERNAME}/g' script/entrypoint.sh
+              sed -i 's/ADMIN_PASSWORD/${AIRFLOW_ADMIN_PASSWORD}/g' script/entrypoint.sh
+              sed -i 's/ADMIN_EMAIL/${airflow_admin.EMAIL}/g' script/entrypoint.sh
+              sed -i 's/ADMIN_FIRST_NAME/${airflow_admin.FIRSTNAME}/g' script/entrypoint.sh
+              sed -i 's/ADMIN_LAST_NAME/${airflow_admin.LASTNAME}/g' script/entrypoint.sh
+
+              IMAGE_NAME=poim-jenkins-test-image
+              docker build -t poim-jenkins-test-image --build-arg AIRFLOW_GIT_USER=${GIT_PULL_USR} --build-arg AIRFLOW_GIT_PASS=${GIT_PULL_PSW} --build-arg AIRFLOW_FETCH_DAGS=true --build-arg AIRFLOW_GIT_BRANCH=$dag_branch .
+
+              CONTAINER_NAME=\$(echo -n \${BRANCH_NAME}-\${BUILD_NUMBER} | sha256sum | awk '{print \$1}')
+              docker run --name \${CONTAINER_NAME} poim-jenkins-test-image bash testing.sh testing/static /testing/airflow/pipeline_definition
+              docker cp \${CONTAINER_NAME}:/opt/airflow/test-reports ./test-reports
+              docker container rm \${CONTAINER_NAME}
+            """
+          }
+        }
+      }
+    }
+
+    stage('Deployment') {
+      when {
+        anyOf {
+          expression{env.BRANCH_NAME == 'development'}
+          expression{env.BRANCH_NAME == 'master'}
+          expression{env.BRANCH_NAME == 'production'}
+        }
+      }
+      steps {
+        script {
+          def image_based_branch = getDockerImage(env.BRANCH_NAME)
+          def aws_account = image_based_branch.aws_account
+          def airflow_image = image_based_branch.aws_account + "/" + image_based_branch.image
+
+          sh """
+            export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+            export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+            export AWS_DEFAULT_REGION=eu-west-1
+
+            /usr/local/bin/aws ecr get-login-password --region eu-west-1 | docker login --username AWS --password-stdin $aws_account
+            docker tag poim-jenkins-test-image $airflow_image:latest
+            docker push $airflow_image:latest
+          """
+        }
+        
+      }
+    }
+
+  }
+
+  post {
+    always {
+      archiveArtifacts '**/test-reports/*.xml'
+      junit '**/test-reports/*.xml'
+    }
+
+  }
+}
+
+def getEnvName(branchName) {
+    if("development".equals(branchName)) {
+        return "DEV";
+    } else if ("master".equals(branchName)) {
+        return "STAGING";
+    } else if ("production".equals(branchName)){
+        return "PROD";
+    }
+    return "UNKNOWN"
+}
+
+def getDockerImage(branchName) {
+  if ("development".equals(branchName)) {
+      return [aws_account:"183993691968.dkr.ecr.eu-west-1.amazonaws.com" , image:"poim-airflow-dev"]
+  }
+  else if ("master".equals(branchName)) {
+      return [aws_account:"183993691968.dkr.ecr.eu-west-1.amazonaws.com" , image:"poim-airflow-staging"] 
+  } 
+  else if ("production".equals(branchName)) {
+      return [aws_account:"183993691968.dkr.ecr.eu-west-1.amazonaws.com" , image:"poim-airflow-prod"] 
+  }  
+  return [aws_account:"183993691968.dkr.ecr.eu-west-1.amazonaws.com" , image:"poim-airflow-sandbox"] 
+}
+
+def getDAGbranch(branchName) {
+    if ("master".equals(branchName)) {
+        return "staging"
+    }
+    else if ("production".equals(branchName)) {
+        return "production"
+    }
+    return "dev"
+}

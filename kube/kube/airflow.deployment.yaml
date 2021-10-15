@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow
+spec:
+  selector:
+    matchLabels:
+      app: airflow
+  template:
+    metadata:
+      labels:
+        app: airflow
+    spec:
+      containers:
+      - name: airflow-webserver
+        image: airflow-2.0.2:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        args:
+          - "webserver"

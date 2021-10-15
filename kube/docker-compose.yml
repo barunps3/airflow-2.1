@@ -1,0 +1,116 @@
+version: '3.5'
+
+x-airflow-common:
+  &airflow-common
+  build: ./
+  volumes:
+  ###################################### REPLACE with your local dag folder path ########################################
+  - <location-local-dag-folder>:/opt/airflow/dags
+    ### Create .airflowignore file in your local dag folder & add the folder name of virtualenv to this file   
+  #######################################################################################################################
+  - airflow-logs:/opt/airflow/logs
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    FERNET_KEY: <your-generated-fernet-key>
+    ######################################### UNCOMMENT, to pull code from DAG branch ###################################
+    #AIRFLOW_FETCH_DAGS: "true"
+    #AIRFLOW_GIT_USERNAME: <your-bitbucket-id>
+    #AIRFLOW_GIT_TOKEN: <your-bitbucket-token>
+    #AIRFLOW_DAG_BRANCH: <aiflow-dag-branch>
+    ################# Comment out the volume bind to your local dag folder if pulling from bitbucket ##########################
+    ###########################################################################################################################
+  depends_on:
+    - redis
+    - postgres
+
+
+services:
+
+  postgres:
+    container_name: postgres
+    image: postgres:13.2
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 30s
+      retries: 5
+    restart: always
+    ports:
+      - 5432:5432
+
+  redis:
+    container_name: redis
+    image: redis:6.2.5
+    ports:
+      - 6379:6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 30s
+      retries: 50
+    restart: always
+
+  flower:
+    <<: *airflow-common
+    container_name: flower
+    command: flower
+    ports:
+      - 5555:5555
+      - 8082:8080
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: on-failure
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - 8080:8080
+    links:
+      - postgres:postgres
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: on-failure
+
+  airflow-worker:
+    <<: *airflow-common
+    container_name: airflow-worker
+    command: worker
+    links:
+      - postgres:postgres
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - 'celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: on-failure
+
+volumes:
+  airflow-logs:
+  postgres-db:
